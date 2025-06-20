@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -15,7 +16,6 @@ assert DEEPGRAM_API_KEY, "Deepgram API key missing in .env"
 
 app = FastAPI()
 
-# CORS for frontend interaction
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,13 +24,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve simple HTML client
 @app.get("/", response_class=HTMLResponse)
 async def index():
     with open("index.html") as f:
         return f.read()
 
-# WebSocket endpoint for audio streaming
 @app.websocket("/ws/audio")
 async def ws_audio(ws: WebSocket):
     await ws.accept()
@@ -39,6 +37,20 @@ async def ws_audio(ws: WebSocket):
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
     }
+
+    transcript_buffer = []
+    last_update_time = datetime.utcnow()
+    ENDPOINT_THRESHOLD = 3  # seconds of silence to consider endpoint
+
+    async def endpoint_monitor():
+        nonlocal transcript_buffer, last_update_time
+        while True:
+            await asyncio.sleep(1)
+            if transcript_buffer and datetime.utcnow() - last_update_time > timedelta(seconds=ENDPOINT_THRESHOLD):
+                final_text = " ".join(transcript_buffer).strip()
+                if final_text:
+                    await ws.send_text(f"[Endpoint Triggered] Sending to LLM: {final_text}")
+                    transcript_buffer.clear()
 
     try:
         async with websockets.connect(uri, extra_headers=headers) as dg_ws:
@@ -51,18 +63,24 @@ async def ws_audio(ws: WebSocket):
                     print("Client stream ended:", e)
 
             async def receive_from_deepgram():
+                nonlocal last_update_time
                 try:
                     async for msg in dg_ws:
                         res = json.loads(msg)
                         if res.get("channel", {}).get("alternatives"):
                             transcript = res["channel"]["alternatives"][0]["transcript"]
                             if transcript:
-                                print(">>", transcript)
+                                last_update_time = datetime.utcnow()
+                                transcript_buffer.append(transcript)
                                 await ws.send_text(f"Transcript: {transcript}")
                 except Exception as e:
                     print("Deepgram stream ended:", e)
 
-            await asyncio.gather(receive_from_client(), receive_from_deepgram())
+            await asyncio.gather(
+                receive_from_client(),
+                receive_from_deepgram(),
+                endpoint_monitor(),
+            )
 
     except Exception as e:
         print("WebSocket error:", e)
