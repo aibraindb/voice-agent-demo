@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Live Voice Agent</title>
+</head>
+<body>
+  <h2>🎙️ Speak to Agent</h2>
+  <button onclick="start()">Start</button>
+  <button onclick="stop()">Stop</button>
+  <pre id="output"></pre>
+
+  <script>
+    let ws;
+    let mediaRecorder;
+
+    function start() {
+      ws = new WebSocket("ws://localhost:8000/ws/audio");
+
+      ws.onmessage = (event) => {
+        document.getElementById("output").textContent += event.data + "\n";
+      };
+
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+        mediaRecorder.ondataavailable = e => {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+            e.data.arrayBuffer().then(buffer => ws.send(buffer));
+          }
+        };
+
+        mediaRecorder.start(250); // send 250ms chunks
+      });
+    }
+
+    function stop() {
+      mediaRecorder?.stop();
+      ws?.close();
+    }
+  </script>
+</body>
+</html>

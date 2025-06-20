@@ -1,0 +1,74 @@
+import os
+import asyncio
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+from deepgram import DeepgramClient, LiveOptions, LiveTranscriptionEvents
+
+load_dotenv()
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+assert DEEPGRAM_API_KEY, "Deepgram API key missing in .env"
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    with open("index.html") as f:
+        return f.read()
+
+@app.websocket("/ws/audio")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    dg_client = DeepgramClient(DEEPGRAM_API_KEY)
+
+    options = LiveOptions(
+        model="nova",
+        language="en-US",
+        smart_format=True,
+        interim_results=False,
+        encoding="linear16",
+        sample_rate=16000,
+        channels=1,
+    )
+
+    try:
+        # ✅ Correct for SDK v4.3.1
+        live = await dg_client.listen.live.via_websocket(
+            options=options,
+            on_event=LiveTranscriptionEvents.Transcript,
+            on_data=lambda x: asyncio.create_task(send_transcript(websocket, x))
+        )
+    except Exception as e:
+        print(f"Failed to start transcription: {e}")
+        await websocket.send_text(f"ERROR: {e}")
+        await websocket.close()
+        return
+
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            await live.send(data)
+    except Exception as e:
+        print("WebSocket error:", e)
+    finally:
+        await live.finish()
+        await websocket.close()
+
+async def send_transcript(websocket, transcript):
+    try:
+        if transcript.channel.alternatives:
+            alt = transcript.channel.alternatives[0]
+            if alt.transcript:
+                print(f">> {alt.transcript}")
+                await websocket.send_text(alt.transcript)
+    except Exception as e:
+        print(f"Transcript send error: {e}")

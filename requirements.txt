@@ -1,0 +1,7 @@
+
+fastapi
+websockets
+python-dotenv
+deepgram-sdk==3.0.5
+openai
+uvicorn
